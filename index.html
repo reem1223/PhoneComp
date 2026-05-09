@@ -38,7 +38,7 @@
                 </div>
                 <div>
                     <h1 class="text-3xl font-black italic tracking-tight">SmartCompare <span class="text-indigo-600">Live</span></h1>
-                    <p class="text-slate-500 text-[10px] font-black uppercase tracking-[0.2em]">מחובר למאגר GSMArena בזמן אמת</p>
+                    <p class="text-slate-500 text-[10px] font-black uppercase tracking-[0.2em]">פותח ע"י NexAria פתרונות מתקדמים</p>
                 </div>
             </div>
             
@@ -167,13 +167,25 @@
 
             const currentYear = new Date().getFullYear();
             const systemPrompt = `You are a professional mobile phone specialist and sales assistant focused strictly on the ISRAELI market.
-            Search for the detailed phone specs of the user query. 
-            CRITICAL: Prioritize Israeli official pages (samsung.com/il, mi-israel.co.il) and top retailers (KSP, Ivory, Dynamic) to ensure specifications reflect the versions sold in Israel.
-            
+
+            MANDATORY SEARCH PROTOCOL — FOLLOW IN THIS EXACT ORDER:
+            1. FIRST, search ONLY these trusted Israeli sources:
+               - samsung.com/il (official Samsung Israel)
+               - mi-israel.co.il (official Xiaomi Israel)
+               - ksp.co.il (KSP retailer)
+               - ivory.co.il (Ivory retailer)
+               - dynamic.co.il (Dynamic retailer)
+               - zol.co.il, bug.co.il (other major Israeli retailers)
+            2. Record the EXACT source URL for every spec you find.
+            3. ONLY if a spec is NOT found on any Israeli source above, search general web sources (official global brand sites, reputable tech blogs).
+            4. ABSOLUTE LAST RESORT: If a spec is completely missing from Israeli sources AND general web, ONLY then use GSMArena (gsmarena.com) and mark the source "gsmarena".
+
             STRICT FACT-CHECKING RULES:
-            1. E-SIM SUPPORT: You MUST BE extremely skeptical. Most budget/mid-range series sold in Israel (Galaxy A0x, A1x, A2x, A3x and Redmi Note base models) DO NOT support e-SIM. Unless you find a specific, explicit mention of e-SIM on the Israeli official product page or KSP/Ivory listing for the EXACT model, you MUST state "ללא תמיכה ב-E-SIM". DO NOT assume support based on flagship trends.
-            2. WIRELESS CHARGING: Base Galaxy A series and Redmi models almost never have this. Only state support if explicitly verified for the IL model.
-            
+            1. E-SIM SUPPORT — EXTREMELY SKEPTICAL. Most budget/mid-range models in Israel (Galaxy A0x/A1x/A2x/A3x, Redmi Note base models) DO NOT have e-SIM. Unless an Israeli source EXPLICITLY states e-SIM support for the EXACT model, you MUST output "ללא תמיכה ב-E-SIM" and source "general_web" (even if global sites claim support). NEVER assume.
+            2. WIRELESS CHARGING — Base Galaxy A series and Redmi models almost never have this in Israel. Only state support if an Israeli source explicitly confirms it.
+            3. CPU VERSION — Israeli market often gets different chips (Exynos vs Snapdragon). Verify the exact chip version sold in Israel.
+            4. RAM/STORAGE OPTIONS — Israeli retailers often carry fewer variants. Only list configurations actually sold in Israel.
+
             Return a clean, valid JSON object strictly following this schema:
             {
                 "name": "Exact Name",
@@ -196,6 +208,12 @@
                 "network": "Supported networks in Israel (e.g. 2G, 3G, 4G, 5G)",
                 "ip_rating": "IP rating (e.g. IP68 or None)",
                 "perf_score": numeric0to100,
+                "source_verification": {
+                    "esim_source": "URL or 'general_web' or 'gsmarena' or 'not_found'",
+                    "wireless_charge_source": "URL or 'general_web' or 'gsmarena' or 'not_found'",
+                    "cpu_source": "URL or 'general_web' or 'gsmarena' or 'not_found'",
+                    "overall_trust": "high (all from Israeli sources) | medium (some from general web) | low (gsmarena or mostly general web)"
+                },
                 "history": [
                     {"year": ${currentYear-3}, "model": "Model from 3 years ago", "score": numeric},
                     {"year": ${currentYear-2}, "model": "Model from 2 years ago", "score": numeric},
@@ -205,12 +223,20 @@
             CRITICAL: The 'history' MUST contain exactly 3 years preceding the current year (${currentYear}).
             Translate all technical descriptions to Hebrew. Return ONLY valid JSON without markdown formatting.`;
 
+            const enhancedQuery = `Find complete specifications for "${query}" sold in Israel.
+            STEP 1: Search ONLY these Israeli sites first: site:samsung.com/il OR site:mi-israel.co.il OR site:ksp.co.il OR site:ivory.co.il OR site:dynamic.co.il OR site:zol.co.il OR site:bug.co.il
+            STEP 2: Record which site each spec came from.
+            STEP 3: For any spec NOT found on Israeli sites, search general web sources.
+            STEP 4: ABSOLUTE LAST RESORT — ONLY if completely missing from steps 1-3, use gsmarena.com and mark source as "gsmarena".
+            NEVER use GSMArena as a primary source. Israeli market specs often differ from global specs.
+            Pay special attention to: e-SIM support, wireless charging, CPU variant, and RAM/storage options specific to the Israeli market.`;
+
             try {
                 const result = await fetchWithRetry(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${getApiKey()}`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
-                        contents: [{ parts: [{ text: query }] }],
+                        contents: [{ parts: [{ text: enhancedQuery }] }],
                         systemInstruction: { parts: [{ text: systemPrompt }] },
                         tools: [{ "google_search": {} }]
                     })
@@ -289,6 +315,35 @@
             });
         }
 
+        function formatNetwork(val) {
+            if (!val) return '--';
+            const text = val.toLowerCase();
+            const gens = [];
+            if (text.includes('5g')) gens.push('5G');
+            if (text.includes('lte')) gens.push('LTE');
+            else if (text.includes('4g')) gens.push('4G');
+            if (text.includes('3g')) gens.push('3G');
+            if (text.includes('2g')) gens.push('2G');
+            if (text.includes('1g')) gens.push('1G');
+            return gens.join(', ') || val;
+        }
+
+        function formatSimInfo(val) {
+            if (!val) return '--';
+            const lower = val.toLowerCase();
+            const hasEsim = lower.includes('e-sim') && !lower.includes('ללא');
+
+            // Extract number of physical SIMs
+            let simCount = 1;
+            const numMatch = val.match(/(\d+)/);
+            if (numMatch) simCount = parseInt(numMatch[1]);
+            else if (lower.includes('שני') || lower.includes('שניים')) simCount = 2;
+            else if (lower.includes('אחד') || lower.includes('בלבד') || lower.includes('יחיד')) simCount = 1;
+
+            const simText = simCount === 1 ? '1 כרטיס' : `${simCount} כרטיסים`;
+            return hasEsim ? `E-SIM + ${simText}` : simText;
+        }
+
         function renderRows() {
             const body = document.getElementById('tableBody');
             const specs = [
@@ -319,6 +374,8 @@
 
                 const getVal = (p, key) => {
                     if (key === 'res_refresh') return `${p.res} @ ${p.refresh_rate}Hz`;
+                    if (key === 'network') return formatNetwork(p.network);
+                    if (key === 'sim_info') return formatSimInfo(p.sim_info);
                     return p[key];
                 };
 
@@ -348,26 +405,54 @@
             }).join('');
         }
 
+        function getAllBest(phones, extractFn) {
+            if (!phones.length) return [];
+            const values = phones.map(extractFn);
+            const max = Math.max(...values);
+            return phones.filter(p => extractFn(p) === max);
+        }
+
+        function formatNames(names, prefix = 'ה-') {
+            const prefixed = names.map(n => `${prefix}${n}`);
+            if (prefixed.length === 1) return prefixed[0];
+            if (prefixed.length === 2) return `${prefixed[0]} ו${prefixed[1]}`;
+            return prefixed.slice(0, -1).join(', ') + ` ו${prefixed[prefixed.length - 1]}`;
+        }
+
         function renderVerdict() {
             const container = document.getElementById('verdictText');
             if (selectedPhones.length === 0) return;
 
-            const bestBat = [...selectedPhones].sort((a,b) => (parseInt(b.bat)||0) - (parseInt(a.bat)||0))[0];
-            const bestPerf = [...selectedPhones].sort((a,b) => b.perf_score - a.perf_score)[0];
-            const bestBright = [...selectedPhones].sort((a,b) => (parseInt(b.bright)||0) - (parseInt(a.bright)||0))[0];
-            
-            // New Best Selectors
-            const bestCam = [...selectedPhones].sort((a,b) => b.perf_score - a.perf_score)[0]; // Perf score as quality proxy
-            const bestCharge = [...selectedPhones].sort((a,b) => (parseInt(b.wired_charge)||0) - (parseInt(a.wired_charge)||0))[0];
-            const esimPhones = selectedPhones.filter(p => p.sim_info && p.sim_info.includes('תומך ב-E-SIM'));
-            const esimText = esimPhones.length > 0 ? `המכשירים ${esimPhones.map(p => p.name).join(', ')} תומכים ב-E-SIM.` : 'אף אחד מהמכשירים לא תומך ב-E-SIM.';
+            const bestBat = getAllBest(selectedPhones, p => parseInt(p.bat) || 0);
+            const bestPerf = getAllBest(selectedPhones, p => p.perf_score || 0);
+            const bestBright = getAllBest(selectedPhones, p => parseInt(p.bright) || 0);
+            const bestCam = getAllBest(selectedPhones, p => p.perf_score || 0);
+            const bestCharge = getAllBest(selectedPhones, p => parseInt(p.wired_charge) || 0);
+
+            const batNames = formatNames(bestBat.map(p => p.name), 'ל-');
+            const perfNames = formatNames(bestPerf.map(p => p.name));
+            const brightNames = formatNames(bestBright.map(p => p.name));
+            const camNames = formatNames(bestCam.map(p => p.name));
+            const chargeNames = formatNames(bestCharge.map(p => p.name), 'ל-');
+
+            const esimPhones = selectedPhones.filter(p => {
+                const info = (p.sim_info || '').toLowerCase();
+                return info.includes('e-sim') && !info.includes('ללא');
+            });
+            const esimText = esimPhones.length > 0
+                ? `המכשירים ${esimPhones.map(p => p.name).join(', ')} תומכים ב-E-SIM.`
+                : 'אף אחד מהמכשירים לא תומך ב-E-SIM.';
+
+            const perfVerb = bestPerf.length > 1 ? 'הם' : 'הוא';
+            const perfNoun = bestPerf.length > 1 ? 'המכשירים החזקים ביותר' : 'המכשיר החזק ביותר';
+            const camVerb = bestCam.length > 1 ? 'מציעים' : 'מציע';
 
             const tips = [
-                { icon: '⚡', label: 'ביצועי קצה', text: `ה-${bestPerf.name} הוא המכשיר החזק ביותר בחבורה.` },
-                { icon: '🔋', label: 'חיי סוללה', text: `ל-${bestBat.name} יש את הקיבולת הגבוהה ביותר.` },
-                { icon: '☀️', label: 'חוויית צפייה', text: `המסך של ${bestBright.name} יציג תמונה ברורה גם בשמש.` },
-                { icon: '📸', label: 'איכות צילום', text: `ה-${bestCam.name} מציע את מערך המצלמות האיכותי ביותר.` },
-                { icon: '🔌', label: 'מהירות טעינה', text: `ל-${bestCharge.name} יש את הספק הטעינה הגבוה ביותר (${bestCharge.wired_charge}W).` },
+                { icon: '⚡', label: 'ביצועי קצה', text: `${perfNames} ${perfVerb} ${perfNoun} בחבורה.` },
+                { icon: '🔋', label: 'חיי סוללה', text: `${batNames} יש את הקיבולת הגבוהה ביותר.` },
+                { icon: '☀️', label: 'חוויית צפייה', text: `המסך של ${brightNames} יציג תמונה ברורה גם בשמש.` },
+                { icon: '📸', label: 'איכות צילום', text: `${camNames} ${camVerb} את מערך המצלמות האיכותי ביותר.` },
+                { icon: '🔌', label: 'מהירות טעינה', text: `${chargeNames} יש את הספק הטעינה הגבוה ביותר (${bestCharge[0].wired_charge}W).` },
                 { icon: '📲', label: 'טכנולוגיית SIM', text: esimText }
             ];
 
